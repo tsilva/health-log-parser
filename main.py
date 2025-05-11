@@ -106,6 +106,47 @@ def process_section_with_io(section, model_id, input_file_stem, data_dir):
         return (date, formatted)
     return None
 
+def compare_input_output_and_report(input_path, output_path, report_path, model_id):
+    with open(input_path, "r", encoding="utf-8") as f:
+        input_text = f.read()
+    with open(output_path, "r", encoding="utf-8") as f:
+        output_text = f.read()
+
+    system_prompt = (
+        "You are a clinical data auditor. The user will provide two files: "
+        "the first is the original health log (possibly unstructured), and the second is a curated/structured version. "
+        "Your job is to identify and list any clinical data (symptoms, medications, medical visits, test results, dates, etc.) "
+        "that is present in the original file but missing or omitted in the curated file. "
+        "Be specific: for each missing item, quote the relevant text from the original and explain what is missing in the curated version. "
+        "If nothing is missing, say 'No missing clinical data found.'"
+    )
+
+    user_prompt = (
+        "Original health log (input file):\n"
+        "-----\n"
+        f"{input_text}\n"
+        "-----\n"
+        "Curated health log (output file):\n"
+        "-----\n"
+        f"{output_text}\n"
+        "-----\n"
+        "Please list any clinical data present in the original but missing in the curated version."
+    )
+
+    completion = client.chat.completions.create(
+        model=model_id,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        max_tokens=2048,
+        temperature=0.0
+    )
+    report = completion.choices[0].message.content.strip()
+    with open(report_path, "w", encoding="utf-8") as f:
+        f.write(report)
+    print(f"Clinical data comparison report written to {report_path}")
+
 def main():
     # Require input file as command-line argument
     if len(sys.argv) < 2:
@@ -145,6 +186,10 @@ def main():
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(curated_log)
     print(f"Curated health log written to {output_path}")
+
+    # Compare input and output, generate report
+    report_path = "./clinical_data_missing_report.md"
+    compare_input_output_and_report(input_path, output_path, report_path, model_id)
 
 if __name__ == "__main__":
     main()
