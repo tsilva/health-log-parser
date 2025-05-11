@@ -8,6 +8,7 @@ from pathlib import Path
 from openai import OpenAI
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dateutil.parser import parse as date_parse
 
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
@@ -43,15 +44,23 @@ If anything is unclear, infer respectfully based on context but do not invent me
 """
 
 def split_markdown_sections(text):
-    # Improved: splits on lines starting with ### followed by a date, capturing the header and all following lines
-    pattern = r"(^###\s+\d{4}-\d{2}-\d{2}.*(?:\n(?!### ).*)*)"
-    matches = re.findall(pattern, text, flags=re.MULTILINE)
-    return [m.strip() for m in matches if m.strip()]
+    # Simple split: split on all lines starting with ### (date header)
+    sections = re.split(r'(?=^###\s+\d{4}-\d{2}-\d{2})', text, flags=re.MULTILINE)
+    return [s.strip() for s in sections if s.strip()]
 
 def extract_date_from_section(section):
-    # Extracts the date from the section header
-    m = re.match(r"^###\s+(\d{4}-\d{2}-\d{2})", section.strip())
-    return m.group(1) if m else "unknown"
+    # Extracts the date from the section header, tolerant to different date formats
+    header = section.strip().splitlines()[0]
+    header = header.lstrip("#").strip()
+    # Find the first thing that looks like a date
+    tokens = re.split(r'\s+', header)
+    for token in tokens:
+        try:
+            dt = date_parse(token, fuzzy=False, dayfirst=False, yearfirst=True)
+            return dt.strftime("%Y-%m-%d")
+        except Exception:
+            continue
+    return "unknown"
 
 def process_section(section, model_id):
     # Extract the date header and content
@@ -153,7 +162,7 @@ def main():
         print("Usage: python main.py <input_file>")
         sys.exit(1)
     input_path = sys.argv[1]
-    output_path = "./output.md"
+    output_path = "./output/output.md"
     model_id = os.getenv("MODEL_ID")
     data_dir = Path("output")
     data_dir.mkdir(exist_ok=True)
@@ -166,21 +175,54 @@ def main():
     sections = split_markdown_sections(text)
     input_file_stem = Path(input_path).stem
 
-    # Store tuples of (date, processed_content)
     processed_entries = []
+    to_process = []
+    section_info = []
+
+    # Pre-check which sections need processing
+    for section in sections:
+        date = extract_date_from_section(section)
+        raw_file = data_dir / f"{input_file_stem}_{date}.raw.md"
+        processed_file = data_dir / f"{input_file_stem}_{date}.processed.md"
+
+        # Always write raw section if not present or different
+        write_raw = True
+        if raw_file.exists():
+            with open(raw_file, "r", encoding="utf-8") as rf:
+                if rf.read() == section:
+                    write_raw = False
+        if write_raw:
+            with open(raw_file, "w", encoding="utf-8") as rf:
+                rf.write(section)
+
+        # If already processed, collect and skip spawning worker
+        processed_content = None
+        if not write_raw and processed_file.exists():
+            with open(processed_file, "r", encoding="utf-8") as pf:
+                processed_content = pf.read().strip()
+            if processed_content:
+                processed_entries.append((date, processed_content))
+                continue
+
+        # Otherwise, queue for processing
+        to_process.append((section, date, raw_file, processed_file))
+        section_info.append(date)
+
     max_workers = int(os.getenv("MAX_WORKERS", "4"))
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(process_section_with_io, section, model_id, input_file_stem, data_dir)
-            for section in sections
-        ]
-        for f in tqdm(as_completed(futures), total=len(futures), desc="Processing sections"):
-            result = f.result()
-            if result:
-                processed_entries.append(result)
+    # Only spawn workers for sections that need processing
+    if to_process:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(process_section_with_io, section, model_id, input_file_stem, data_dir)
+                for section, _, _, _ in to_process
+            ]
+            for f, date in zip(tqdm(as_completed(futures), total=len(futures), desc="Processing sections"), section_info):
+                result = f.result()
+                if result:
+                    processed_entries.append(result)
 
-    # Sort all processed entries by date (alphabetically)
+    # Sort all processed entries by date (alphabetically, reverse for most recent first)
     processed_entries.sort(key=lambda x: x[0], reverse=True)
     curated_log = "\n\n".join([entry for _, entry in processed_entries])
     with open(output_path, "w", encoding="utf-8") as f:
@@ -188,7 +230,7 @@ def main():
     print(f"Curated health log written to {output_path}")
 
     # Compare input and output, generate report
-    report_path = "./clinical_data_missing_report.md"
+    report_path = "./output/clinical_data_missing_report.md"
     compare_input_output_and_report(input_path, output_path, report_path, model_id)
 
 if __name__ == "__main__":
