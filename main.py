@@ -69,11 +69,6 @@ Example output:
         - Preparation was difficult, but manageable.
 """
 
-# Split input text into markdown sections by date
-def split_markdown_sections(text):
-
-    return [s.strip() for s in re.split(r'(?=^###\s+\d{4}-\d{2}-\d{2})', text, flags=re.MULTILINE) if s.strip()]
-
 # Extract date from section header, tolerant to different formats
 def extract_date_from_section(section):
     header = section.strip().splitlines()[0].lstrip("#").strip()
@@ -84,202 +79,115 @@ def extract_date_from_section(section):
             continue
     return "unknown"
 
-# Run LLM to process a section, return formatted markdown
-def process_section(section, model_id):
-    lines = section.strip().splitlines()
-    if not lines or not lines[0].startswith("###"): return None
-    if not any(line.strip() for line in lines[1:]): return None
-    completion = client.chat.completions.create(
-        model=model_id,
-        messages=[
-            {"role": "system", "content": system_prompt_skip_empty},
-            {"role": "user", "content": section}
-        ],
-        max_tokens=2048,
-        temperature=0.0
-    )
-    return completion.choices[0].message.content.strip()
-
-# Handle I/O for a section: write raw, check processed, or process if needed
-def process_section_with_io(section, model_id, input_file_stem, data_dir):
-    date = extract_date_from_section(section)
-    raw_file = data_dir / f"{input_file_stem}_{date}.raw.md"
-    processed_file = data_dir / f"{input_file_stem}_{date}.processed.md"
-    write_raw = not (raw_file.exists() and raw_file.read_text(encoding="utf-8") == section)
-    if write_raw:
-        raw_file.write_text(section, encoding="utf-8")
-    if not write_raw and processed_file.exists():
-        processed_content = processed_file.read_text(encoding="utf-8").strip()
-        if processed_content:
-            return (date, processed_content)
-    formatted = process_section(section, model_id)
-    if formatted:
-        processed_file.write_text(formatted, encoding="utf-8")
-        return (date, formatted)
-    return None
+def get_short_hash(text):
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
 
 def get_file_short_hash(filepath):
-    with open(filepath, "rb") as f:
-        file_hash = hashlib.sha256(f.read()).hexdigest()
-    return file_hash[:8]
+    with open(filepath, "r", encoding="utf-8") as f: return get_short_hash(f.read())
 
-def extract_task(input_path, output_path, model_id, data_dir):
-    # Read and split input file into sections
-    with open(input_path, "r", encoding="utf-8") as f:
-        text = f.read()
-    sections = split_markdown_sections(text)
-    input_file_stem = Path(input_path).stem
+def process(input_path):
+    model_id = os.getenv("MODEL_ID")
 
-    processed_entries, to_process = [], []
-    for section in sections:
-        date = extract_date_from_section(section)
-        raw_file = data_dir / f"{input_file_stem}_{date}.raw.md"
-        processed_file = data_dir / f"{input_file_stem}_{date}.processed.md"
-        error_file = data_dir / f"{input_file_stem}_{date}.errors.md"
-        raw_file.write_text(section, encoding="utf-8")
-        raw_digest = hashlib.sha256(section.encode("utf-8")).hexdigest()
-        # Check if processed file exists and its first line matches raw digest
-        needs_processing = True
+    # Create output path
+    short_hash = get_file_short_hash(input_path)
+    data_dir = Path("output") / short_hash
+    data_dir.mkdir(parents=True, exist_ok=True)
+    output_path = data_dir / "output.md"
+
+    # Run LLM to process a section, return formatted markdown
+    def _process(raw_section):
+        # Write raw section to file
+        date = extract_date_from_section(raw_section)
+        raw_file = data_dir / f"{date}.raw.md"
+        raw_file.write_text(raw_section, encoding="utf-8")
+        raw_hash = get_short_hash(raw_section)
+
+        # If processed file exists and is up-to-date, skip processing
+        processed_file = data_dir / f"{date}.processed.md"
         if processed_file.exists():
-            with processed_file.open(encoding="utf-8") as pf:
-                lines = pf.readlines()
-                if lines and lines[0].strip() == raw_digest:
-                    needs_processing = False
-        # If errors file exists and does not contain $OK$, force reprocessing
-        if error_file.exists():
-            with error_file.open(encoding="utf-8") as ef:
-                lines = ef.readlines()
-                if not any("$OK$" in line for line in lines):
-                    needs_processing = True
-        if needs_processing:
-            to_process.append((section, raw_digest, date, raw_file, processed_file, error_file))
-        else:
-            # Read processed content (skip digest line)
-            with processed_file.open(encoding="utf-8") as pf:
-                lines = pf.readlines()
-                processed_content = "".join(lines[1:]).strip()
-                if processed_content:
-                    processed_entries.append((date, processed_content))
+            processed_text = processed_file.read_text(encoding="utf-8").strip()
+            _raw_hash = processed_text.splitlines()[0].strip()
+            if _raw_hash == raw_hash: return
 
-    max_workers = int(os.getenv("MAX_WORKERS", "4"))
-    def process_and_write(section, raw_digest, date, raw_file, processed_file, error_file):
-        formatted = process_section(section, model_id)
-        if formatted:
-            # Write processed file with digest as first line
-            processed_file.write_text(f"{raw_digest}\n{formatted.strip()}\n", encoding="utf-8")
-            return (date, formatted.strip())
-        return None
+        for _ in range(3):
+            # Run LLM to process the section
+            completion = client.chat.completions.create(
+                model=model_id,
+                messages=[
+                    {"role": "system", "content": system_prompt_skip_empty},
+                    {"role": "user", "content": raw_section}
+                ],
+                max_tokens=2048,
+                temperature=0.0
+            )
+            processed_section = completion.choices[0].message.content.strip()
 
-    if to_process:
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [
-                executor.submit(process_and_write, section, raw_digest, date, raw_file, processed_file, error_file)
-                for (section, raw_digest, date, raw_file, processed_file, error_file) in to_process
-            ]
-            for f in tqdm(as_completed(futures), total=len(futures), desc="Processing sections"):
-                result = f.result()
-                if result:
-                    processed_entries.append(result)
+            # Run LLM to validate the processed section
+            system_prompt = (
+                "You are a clinical data auditor. The user will provide two files: "
+                "the first is the original health log (possibly unstructured), and the second is a curated/structured version. "
+                "Your job is to identify and list any clinical data (symptoms, medications, medical visits, test results, dates, etc.) "
+                "that is present in the original file but missing or omitted in the curated file. "
+                "Be specific: for each missing item, quote the relevant text from the original and explain what is missing in the curated version. "
+                "If nothing is missing, reply only with '$OK$' (without quotes) and do not add any other text."
+                "If you find any error in the curated version, after describing all issues, output '$FAILED$."
+            )
+            user_prompt = (
+                "Original health log (input section):\n-----\n"
+                f"{raw_section}\n-----\n"
+                "Curated health log (output section):\n-----\n"
+                f"{processed_section}\n-----\n"
+                "Please list any clinical data present in the original but missing in the curated version."
+            )
+            completion = client.chat.completions.create(
+                model=model_id,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=2048,
+                temperature=0.0
+            )
+            
+            # If the validation does not return "$OK$", retry processing
+            error_content = completion.choices[0].message.content.strip()
+            if "$OK$" not in error_content: continue
 
-    # Sort and write final curated log
-    processed_entries.sort(key=lambda x: x[0], reverse=True)
-    curated_log = "\n\n".join([entry for _, entry in processed_entries])
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(curated_log)
-    print(f"Curated health log written to {output_path}")
-
-def validate_extraction_task(data_dir, model_id):
-    # For each .raw.md and .processed.md pair in data_dir, compare and write .errors.md if needed
-    raw_files = list(data_dir.glob("*.raw.md"))
-
-    def validate_one(raw_file):
-        processed_file = data_dir / f"{raw_file.stem.replace('.raw', '')}.processed.md"
-        if not processed_file.exists():
-            return None
-        input_text = raw_file.read_text(encoding="utf-8")
-        output_text = processed_file.read_text(encoding="utf-8")
+            # If validation passes, write the processed section to file
+            processed_file.write_text(processed_section, encoding="utf-8")
+            print(f"Processed section for date {date} written to {processed_file}")
+            
+            # Return True to indicate successful processing
+            return True
         
-        # Compute hashes
-        raw_hash = hashlib.sha256(input_text.encode("utf-8")).hexdigest()
-        processed_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
-        error_file = data_dir / f"{raw_file.stem.replace('.raw', '')}.errors.md"
+        # If all retries failed, return False
+        return False 
         
-        # Check if error file exists and hashes match
-        needs_validation = True
-        if error_file.exists():
-            first_line = error_file.open(encoding="utf-8").readline().strip()
-            if first_line == f"{raw_hash};{processed_hash}":
-                needs_validation = False
-        if not needs_validation:
-            return None
-        system_prompt = (
-            "You are a clinical data auditor. The user will provide two files: "
-            "the first is the original health log (possibly unstructured), and the second is a curated/structured version. "
-            "Your job is to identify and list any clinical data (symptoms, medications, medical visits, test results, dates, etc.) "
-            "that is present in the original file but missing or omitted in the curated file. "
-            "Be specific: for each missing item, quote the relevant text from the original and explain what is missing in the curated version. "
-            "If nothing is missing, reply only with '$OK$' (without quotes) and do not add any other text."
-            "If you find any error in the curated version, after describing all issues, output '$FAILED$."
-        )
-        user_prompt = (
-            "Original health log (input section):\n-----\n"
-            f"{input_text}\n-----\n"
-            "Curated health log (output section):\n-----\n"
-            f"{output_text}\n-----\n"
-            "Please list any clinical data present in the original but missing in the curated version."
-        )
-        completion = client.chat.completions.create(
-            model=model_id,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=2048,
-            temperature=0.0
-        )
-        error_content = completion.choices[0].message.content.strip()
-        error_file.write_text(f"{raw_hash};{processed_hash}\n{error_content}", encoding="utf-8")
-        return error_file
 
+    # Read and split input file into sections
+    with open(input_path, "r", encoding="utf-8") as f: input_text = f.read()
+    sections = [s.strip() for s in re.split(r'(?=^###\s+\d{4}-\d{2}-\d{2})', input_text, flags=re.MULTILINE) if s.strip()]
+
+    # Process sections in parallel
     max_workers = int(os.getenv("MAX_WORKERS", "4"))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(validate_one, raw_file) for raw_file in raw_files]
-        for f in tqdm(as_completed(futures), total=len(futures), desc="Validating extraction"):
-            error_file = f.result()
-            if error_file:
-                print(f"Wrote error file: {error_file}")
+        futures = [executor.submit(_process, section) for section in sections]
+        for f in tqdm(as_completed(futures), total=len(futures), desc="Processing sections"): f.result()
+
+    # Write the final curated health log
+    processed_files = list(data_dir.glob("*.processed.md"))
+    processed_files = sorted(processed_files, key=lambda f: f.stem)
+    processed_entries = [f.read_text(encoding="utf-8") for f in processed_files]
+    processed_text = "\n\n".join(processed_entries)
+    with open(output_path, "w", encoding="utf-8") as f: f.write(processed_text)
+    print(f"Curated health log written to {output_path}")
 
 def main():
     parser = argparse.ArgumentParser(description="Health log parser and validator")
-    subparsers = parser.add_subparsers(dest="task", required=True)
-
-    # Extract subcommand
-    extract_parser = subparsers.add_parser("extract", help="Extract and curate health log")
-    extract_parser.add_argument("input_file", help="Input file to process")
-
-    # Validate extraction subcommand
-    validate_parser = subparsers.add_parser("validate_extraction", help="Validate extraction by comparing input and output files")
-    validate_parser.add_argument("input_file", help="Original input file")
+    parser.add_argument("input_file", help="Original input file")
     
     args = parser.parse_args()
-    model_id = os.getenv("MODEL_ID")
-
-    if args.task == "extract":
-        input_path = args.input_file
-        short_hash = get_file_short_hash(input_path)
-        data_dir = Path("output") / short_hash
-        data_dir.mkdir(parents=True, exist_ok=True)
-        output_path = data_dir / "output.md"
-        extract_task(input_path, output_path, model_id, data_dir)
-    elif args.task == "validate_extraction":
-        input_path = args.input_file
-        short_hash = get_file_short_hash(input_path)
-        data_dir = Path("output") / short_hash
-        assert data_dir.exists(), f"Data directory {data_dir} does not exist. Please run extraction first."
-        validate_extraction_task(data_dir, model_id)
-    else:
-        parser.print_help()
-        sys.exit(1)
+    process(args.input_file)
 
 if __name__ == "__main__":
     main()
