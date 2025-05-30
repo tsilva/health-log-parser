@@ -30,6 +30,7 @@ Instructions:
 - Do not invent or omit information; only use what is present in the input.
 - Preserve all clinical details, even if they seem minor.
 - If an entry does not mention symptoms, diagnosis, or additional clinical details, do NOT add a note such as "No symptoms, diagnosis, or additional clinical details provided in the entry." Only include information actually present in the input.
+- Regardless of input language, all output should be in English.
 
 SAMPLE OUTPUT 1:
 
@@ -101,7 +102,6 @@ def process(input_path):
         raw_file = data_dir / f"{date}.raw.md"
         raw_file.write_text(raw_section, encoding="utf-8")
 
-        processed_file = data_dir / f"{date}.processed.md"
         # The existence/up-to-date check is now outside
         for _ in range(3):
             # Run LLM to process the section
@@ -148,7 +148,8 @@ def process(input_path):
             if "$OK$" not in error_content: continue
 
             # If validation passes, write the processed section to file
-            raw_hash = get_short_hash(raw_section)
+            raw_hash = get_short_hash(raw_section) 
+            processed_file = data_dir / f"{date}.processed.md"
             processed_file.write_text(f"{raw_hash}\n{processed_section}", encoding="utf-8")
             print(f"Processed section for date {date} written to {processed_file}")
             
@@ -167,15 +168,18 @@ def process(input_path):
         count = section.count('###')
         assert count == 1, f"Section does not contain exactly one ###:\n{section}"
 
+    # Assert no duplicate dates in sections
+    dates = [extract_date_from_section(section) for section in sections]
+    # Print duplicate dates if any
+    if len(dates) != len(set(dates)):
+        duplicates = {date for date in dates if dates.count(date) > 1}
+        print(f"Duplicate dates found: {duplicates}")
+        sys.exit(1)
+    
     # Precompute which sections need processing
     to_process = []
     for section in sections:
-        try:
-            date = extract_date_from_section(section)
-        except Exception as e:
-            print(section)
-            import sys
-            sys.exit(f"Error extracting date from section: {e}")
+        date = extract_date_from_section(section)
         raw_hash = get_short_hash(section)
         processed_file = data_dir / f"{date}.processed.md"
         if processed_file.exists():
@@ -193,7 +197,7 @@ def process(input_path):
 
     # Write the final curated health log
     processed_files = list(data_dir.glob("*.processed.md"))
-    processed_files = sorted(processed_files, key=lambda f: f.stem)
+    processed_files = sorted(processed_files, key=lambda f: f.stem, reverse=True)
     processed_entries = ["\n".join(f.read_text(encoding="utf-8").splitlines()[1:]) for f in processed_files]
     processed_text = "\n\n".join(processed_entries)
     with open(output_path, "w", encoding="utf-8") as f: f.write(processed_text)
