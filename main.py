@@ -8,69 +8,20 @@ from dateutil.parser import parse as date_parse
 import argparse
 import hashlib
 
+# Load prompts from external files
+PROMPTS_DIR = Path(__file__).parent / "prompts"
+with open(PROMPTS_DIR / "process.system_prompt.md", "r", encoding="utf-8") as f:
+    process_system_prompt = f.read()
+with open(PROMPTS_DIR / "validate.system_prompt.md", "r", encoding="utf-8") as f:
+    validate_system_prompt = f.read()
+with open(PROMPTS_DIR / "validate.user_prompt.md", "r", encoding="utf-8") as f:
+    validate_user_prompt = f.read()
+
 # Initialize OpenAI client
 client = OpenAI(
     base_url="https://openrouter.ai/api/v1",
     api_key=os.getenv("OPENROUTER_API_KEY")
 )
-
-# LLM system prompt for health log formatting
-system_prompt_skip_empty = """
-You are a health log formatter and extractor. Your task is to convert each unstructured or semi-structured personal health journal entry into a structured Markdown block, one per date, capturing all relevant clinical details. Do not omit any clinical data (symptoms, medications, visits, test results, dates, etc.) present in the input.
-
-Instructions:
-- For each entry, output a Markdown section starting with '#### YYYY-MM-DD' (use the date from the entry).
-- Under each date, use bullet points to list all clinical events, tests, symptoms, medications, diagnoses, and notes.
-- For lab tests, include test name, value, reference range, and interpretation if available.
-- For doctor visits, include doctor name, location, prescriptions (with dose, frequency, duration), diagnoses, and advice.
-- For symptoms, list them with date and any relevant context.
-- For appointments, specify date and purpose.
-- If a web link is present, format as [description](url).
-- If information is missing or unclear, include it as a note.
-- Do not invent or omit information; only use what is present in the input.
-- Preserve all clinical details, even if they seem minor.
-- If an entry does not mention symptoms, diagnosis, or additional clinical details, do NOT add a note such as "No symptoms, diagnosis, or additional clinical details provided in the entry." Only include information actually present in the input.
-- Regardless of input language, all output should be in English.
-
-SAMPLE OUTPUT 1:
-
-#### 2023-04-11
-
-- Colonoscopy performed by **Dr. Jones (Gastroenterologist)** at **City Hospital**
-    - Findings:
-        - No polyps found, normal mucosa.
-        - Biopsy taken for further analysis.
-    - Notes:
-        - Follow-up in 2 weeks for biopsy results.
-        - Preparation was difficult, but manageable.
-
-SAMPLE OUTPUT 2:
-
-### 2023-04-12
-
-- [Lab testing at LabABC](https://lababc.com/test/12345)
-    - Values:
-        - **Hemoglobin:** 13.2 g/dL (ref: 12-16, normal)
-        - **Leukocytes:** 5.1 x10^9/L (ref: 4-10, normal)
-        - **Ferritin:** 8 ng/mL (ref: 15-150, low)
-    - Notes:
-        - Low ferritin indicates possible iron deficiency.
-
-- Doctor visit with **Dr. Smith (Gastroenterologist)** at **City Hospital**
-    - Prescription:
-        - **Iron Protein Succinylate 100 mg**, 1 tablet daily for 3 month
-        - **Vitamin C 500 mg**, 1 tablet daily for 3 month
-        - **Folic Acid 1 mg**, 1 tablet daily for 3 month
-        - **Vitamin B12 1000 mcg**, 1 tablet weekly for 3 month
-    - Diagnosis:
-        - Iron deficiency anemia
-    - Notes:
-        - Advised dietary changes to include more iron-rich foods.
-        - Recommended follow-up in 3 months.
-
-- I did not feel well on 2023-04-10, had a headache and fatigue.
-- I have a follow-up appointment scheduled for 2023-05-01.
-"""
 
 # Extract date from section header, tolerant to different formats
 def extract_date_from_section(section):
@@ -108,7 +59,7 @@ def process(input_path):
             completion = client.chat.completions.create(
                 model=model_id,
                 messages=[
-                    {"role": "system", "content": system_prompt_skip_empty},
+                    {"role": "system", "content": process_system_prompt},
                     {"role": "user", "content": raw_section}
                 ],
                 max_tokens=2048,
@@ -117,21 +68,10 @@ def process(input_path):
             processed_section = completion.choices[0].message.content.strip()
 
             # Run LLM to validate the processed section
-            system_prompt = (
-                "You are a clinical data auditor. The user will provide two files: "
-                "the first is the original health log (possibly unstructured), and the second is a curated/structured version. "
-                "Your job is to identify and list any clinical data (symptoms, medications, medical visits, test results, dates, etc.) "
-                "that is present in the original file but missing or omitted in the curated file. "
-                "Be specific: for each missing item, quote the relevant text from the original and explain what is missing in the curated version. "
-                "If nothing is missing, reply only with '$OK$' (without quotes) and do not add any other text."
-                "If you find any error in the curated version, after describing all issues, output '$FAILED$."
-            )
-            user_prompt = (
-                "Original health log (input section):\n-----\n"
-                f"{raw_section}\n-----\n"
-                "Curated health log (output section):\n-----\n"
-                f"{processed_section}\n-----\n"
-                "Please list any clinical data present in the original but missing in the curated version."
+            system_prompt = validate_system_prompt
+            user_prompt = validate_user_prompt.format(
+                raw_section=raw_section,
+                processed_section=processed_section
             )
             completion = client.chat.completions.create(
                 model=model_id,
