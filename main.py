@@ -201,7 +201,8 @@ def extract_task(input_path, output_path, model_id, data_dir):
 
 def validate_extraction_task(data_dir, model_id):
     # For each .raw.md and .processed.md pair in data_dir, compare and write .errors.md if needed
-    for raw_file in data_dir.glob("*.raw.md"):
+    raw_files = list(data_dir.glob("*.raw.md"))
+    for raw_file in tqdm(raw_files, desc="Validating extraction"):
         date_part = raw_file.stem.split("_")[-1]
         processed_file = data_dir / f"{raw_file.stem.replace('.raw', '')}.processed.md"
         if not processed_file.exists():
