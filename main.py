@@ -5,6 +5,7 @@ from openai import OpenAI
 from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dateutil.parser import parse as date_parse
+import argparse
 
 # Initialize OpenAI client
 client = OpenAI(
@@ -149,17 +150,7 @@ def compare_input_output_and_report(input_path, output_path, report_path, model_
         f.write(report)
     print(f"Clinical data comparison report written to {report_path}")
 
-def main():
-    # Parse command-line arguments and set up paths
-    if len(sys.argv) < 2:
-        print("Usage: python main.py <input_file>")
-        sys.exit(1)
-    input_path = sys.argv[1]
-    output_path = "./output/output.md"
-    model_id = os.getenv("MODEL_ID")
-    data_dir = Path("output")
-    data_dir.mkdir(exist_ok=True)
-
+def extract_task(input_path, output_path, model_id, data_dir):
     # Read and split input file into sections
     with open(input_path, "r", encoding="utf-8") as f: text = f.read()
     sections = split_markdown_sections(text)
@@ -201,6 +192,40 @@ def main():
     # Generate clinical data comparison report
     report_path = "./output/clinical_data_missing_report.md"
     compare_input_output_and_report(input_path, output_path, report_path, model_id)
+
+def validate_extraction_task(input_path, output_path, model_id):
+    report_path = "./output/clinical_data_missing_report.md"
+    compare_input_output_and_report(input_path, output_path, report_path, model_id)
+
+def main():
+    parser = argparse.ArgumentParser(description="Health log parser and validator")
+    subparsers = parser.add_subparsers(dest="task", required=True)
+
+    # Extract subcommand
+    extract_parser = subparsers.add_parser("extract", help="Extract and curate health log")
+    extract_parser.add_argument("input_file", help="Input file to process")
+
+    # Validate extraction subcommand
+    validate_parser = subparsers.add_parser("validate_extraction", help="Validate extraction by comparing input and output files")
+    validate_parser.add_argument("input_file", help="Original input file")
+    validate_parser.add_argument("output_file", help="Curated output file")
+
+    args = parser.parse_args()
+    model_id = os.getenv("MODEL_ID")
+    data_dir = Path("output")
+    data_dir.mkdir(exist_ok=True)
+
+    if args.task == "extract":
+        input_path = args.input_file
+        output_path = "./output/output.md"
+        extract_task(input_path, output_path, model_id, data_dir)
+    elif args.task == "validate_extraction":
+        input_path = args.input_file
+        output_path = args.output_file
+        validate_extraction_task(input_path, output_path, model_id)
+    else:
+        parser.print_help()
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
