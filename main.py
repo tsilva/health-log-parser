@@ -98,8 +98,11 @@ def process(input_path):
             
             # If the validation does not return "$OK$", retry processing
             error_content = completion.choices[0].message.content.strip()
-            if "$OK$" not in error_content: continue
-
+            if "$OK$" not in error_content:
+                print(f"Validation failed for date {date}: {error_content}") 
+                print("Retrying processing...")
+                continue
+            
             # If validation passes, write the processed section to file
             raw_hash = get_short_hash(raw_section) 
             processed_file = data_dir / f"{date}.processed.md"
@@ -110,6 +113,7 @@ def process(input_path):
             return True
         
         # If all retries failed, return False
+        print(f"Failed to process section for date {date} after 3 attempts")
         return False 
 
     # Read and split input file into sections
@@ -181,44 +185,50 @@ def process(input_path):
     print(f"Saved processed health log to {data_dir / 'output.md'}")
 
     # Write the summary using the LLM
-    completion = client.chat.completions.create(
-        model=model_id,
-        messages=[
-            {
-                "role": "system", 
-                "content": SUMMARY_SYSTEM_PROMPT
-            },
-            {
-                "role": "user", 
-                "content": processed_text
-            }
-        ],
-        max_tokens=2048,
-        temperature=0.0
-    )
-    summary = completion.choices[0].message.content.strip()
-    with open(data_dir / "summary.md", "w", encoding="utf-8") as f: f.write(summary)
-    print(f"Saved processed health summary to {data_dir / 'summary.md'}")
+    summary_file_path = data_dir / "summary.md"
+    if not summary_file_path.exists():
+        print("Generating health summary...")
+        completion = client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {
+                    "role": "system", 
+                    "content": SUMMARY_SYSTEM_PROMPT
+                },
+                {
+                    "role": "user", 
+                    "content": processed_text
+                }
+            ],
+            max_tokens=2048,
+            temperature=0.0
+        )
+        summary = completion.choices[0].message.content.strip()
+        with open(summary_file_path, "w", encoding="utf-8") as f: f.write(summary)
+        print(f"Saved processed health summary to {data_dir / 'summary.md'}")
 
     # Write next steps using the LLM
-    completion = client.chat.completions.create(
-        model=model_id,
-        messages=[
-            {
-                "role": "system", 
-                "content": NEXT_STEPS_SYSTEM_PROMPT
-            },
-            {
-                "role": "user", 
-                "content": processed_text
-            }
-        ],
-        max_tokens=100000,
-        temperature=0.0
-    )
-    next_steps = completion.choices[0].message.content.strip()
-    with open(data_dir / "next_steps.md", "w", encoding="utf-8") as f: f.write(next_steps)
-    print(f"Saved processed health summary to {data_dir / 'next_steps.md'}")
+    next_steps_file_path = data_dir / "next_steps.md"
+    if not next_steps_file_path.exists():
+        print("Generating next steps...")
+        completion = client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {
+                    "role": "system", 
+                    "content": NEXT_STEPS_SYSTEM_PROMPT
+                },
+                {
+                    "role": "user", 
+                    "content": processed_text
+                }
+            ],
+            max_tokens=100000,
+            temperature=0.25
+        )
+        next_steps = completion.choices[0].message.content.strip()
+        with open(next_steps_file_path, "w", encoding="utf-8") as f: f.write(next_steps)
+        print(f"Saved processed health summary to {data_dir / 'next_steps.md'}")
 
 
 def main():
