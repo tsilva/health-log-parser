@@ -166,7 +166,12 @@ def process(input_path):
 
     # Read and split input file into sections
     with open(input_path, "r", encoding="utf-8") as f: input_text = f.read()
-    sections = [s.strip() for s in re.split(r'(?=^###\s+\d{4}-\d{2}-\d{2})', input_text, flags=re.MULTILINE) if s.strip()]
+    sections = [s.strip() for s in re.split(r'(?=^###)', input_text, flags=re.MULTILINE) if s.strip()]
+
+    # Assert that each section contains exactly one '###'
+    for section in sections:
+        count = section.count('###')
+        assert count == 1, f"Section does not contain exactly one ###:\n{section}"
 
     # Process sections in parallel
     max_workers = int(os.getenv("MAX_WORKERS", "4"))
