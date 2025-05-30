@@ -31,9 +31,21 @@ Instructions:
 - Preserve all clinical details, even if they seem minor.
 - If an entry does not mention symptoms, diagnosis, or additional clinical details, do NOT add a note such as "No symptoms, diagnosis, or additional clinical details provided in the entry." Only include information actually present in the input.
 
-Example output:
+SAMPLE OUTPUT 1:
 
-#### 2023-04-12
+#### 2023-04-11
+
+- Colonoscopy performed by **Dr. Jones (Gastroenterologist)** at **City Hospital**
+    - Findings:
+        - No polyps found, normal mucosa.
+        - Biopsy taken for further analysis.
+    - Notes:
+        - Follow-up in 2 weeks for biopsy results.
+        - Preparation was difficult, but manageable.
+
+SAMPLE OUTPUT 2:
+
+### 2023-04-12
 
 - [Lab testing at LabABC](https://lababc.com/test/12345)
     - Values:
@@ -57,28 +69,16 @@ Example output:
 
 - I did not feel well on 2023-04-10, had a headache and fatigue.
 - I have a follow-up appointment scheduled for 2023-05-01.
-
-#### 2023-04-11
-
-- Colonoscopy performed by **Dr. Jones (Gastroenterologist)** at **City Hospital**
-    - Findings:
-        - No polyps found, normal mucosa.
-        - Biopsy taken for further analysis.
-    - Notes:
-        - Follow-up in 2 weeks for biopsy results.
-        - Preparation was difficult, but manageable.
 """
 
 # Extract date from section header, tolerant to different formats
 def extract_date_from_section(section):
     header = section.strip().splitlines()[0].lstrip("#").strip()
+    # Normalize dashes to standard hyphen-minus
+    header = header.replace("–", "-").replace("—", "-")
     for token in re.split(r'\s+', header):
-        try:
-            return date_parse(token, fuzzy=False, dayfirst=False, yearfirst=True).strftime("%Y-%m-%d")
-        except Exception:
-            continue
-    return "unknown"
-
+        return date_parse(token, fuzzy=False, dayfirst=False, yearfirst=True).strftime("%Y-%m-%d")
+    
 def get_short_hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
 
@@ -100,15 +100,9 @@ def process(input_path):
         date = extract_date_from_section(raw_section)
         raw_file = data_dir / f"{date}.raw.md"
         raw_file.write_text(raw_section, encoding="utf-8")
-        raw_hash = get_short_hash(raw_section)
 
-        # If processed file exists and is up-to-date, skip processing
         processed_file = data_dir / f"{date}.processed.md"
-        if processed_file.exists():
-            processed_text = processed_file.read_text(encoding="utf-8").strip()
-            _raw_hash = processed_text.splitlines()[0].strip()
-            if _raw_hash == raw_hash: return
-
+        # The existence/up-to-date check is now outside
         for _ in range(3):
             # Run LLM to process the section
             completion = client.chat.completions.create(
@@ -154,7 +148,8 @@ def process(input_path):
             if "$OK$" not in error_content: continue
 
             # If validation passes, write the processed section to file
-            processed_file.write_text(processed_section, encoding="utf-8")
+            raw_hash = get_short_hash(raw_section)
+            processed_file.write_text(f"{raw_hash}\n{processed_section}", encoding="utf-8")
             print(f"Processed section for date {date} written to {processed_file}")
             
             # Return True to indicate successful processing
@@ -162,7 +157,6 @@ def process(input_path):
         
         # If all retries failed, return False
         return False 
-        
 
     # Read and split input file into sections
     with open(input_path, "r", encoding="utf-8") as f: input_text = f.read()
@@ -173,16 +167,34 @@ def process(input_path):
         count = section.count('###')
         assert count == 1, f"Section does not contain exactly one ###:\n{section}"
 
-    # Process sections in parallel
+    # Precompute which sections need processing
+    to_process = []
+    for section in sections:
+        try:
+            date = extract_date_from_section(section)
+        except Exception as e:
+            print(section)
+            import sys
+            sys.exit(f"Error extracting date from section: {e}")
+        raw_hash = get_short_hash(section)
+        processed_file = data_dir / f"{date}.processed.md"
+        if processed_file.exists():
+            processed_text = processed_file.read_text(encoding="utf-8").strip()
+            _raw_hash = processed_text.splitlines()[0].strip()
+            if _raw_hash == raw_hash: continue 
+        to_process.append(section)
+
+    # Process sections in parallel (only those that need processing)
     max_workers = int(os.getenv("MAX_WORKERS", "4"))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [executor.submit(_process, section) for section in sections]
-        for f in tqdm(as_completed(futures), total=len(futures), desc="Processing sections"): f.result()
+        futures = [executor.submit(_process, section) for section in to_process]
+        for _ in tqdm(as_completed(futures), total=len(futures), desc="Processing sections"):
+            _.result()
 
     # Write the final curated health log
     processed_files = list(data_dir.glob("*.processed.md"))
     processed_files = sorted(processed_files, key=lambda f: f.stem)
-    processed_entries = [f.read_text(encoding="utf-8") for f in processed_files]
+    processed_entries = ["\n".join(f.read_text(encoding="utf-8").splitlines()[1:]) for f in processed_files]
     processed_text = "\n\n".join(processed_entries)
     with open(output_path, "w", encoding="utf-8") as f: f.write(processed_text)
     print(f"Curated health log written to {output_path}")
