@@ -226,7 +226,7 @@ def validate_extraction_task(data_dir, model_id):
             "Your job is to identify and list any clinical data (symptoms, medications, medical visits, test results, dates, etc.) "
             "that is present in the original file but missing or omitted in the curated file. "
             "Be specific: for each missing item, quote the relevant text from the original and explain what is missing in the curated version. "
-            "If nothing is missing, say 'No missing clinical data found.'"
+            "If nothing is missing, reply only with '$OK$' (without quotes) and do not add any other text."
         )
         user_prompt = (
             "Original health log (input section):\n-----\n"
@@ -245,12 +245,6 @@ def validate_extraction_task(data_dir, model_id):
             temperature=0.0
         )
         error_content = completion.choices[0].message.content.strip()
-        if error_content.strip() == "No missing clinical data found.":
-            # Remove stale error file if present
-            if error_file.exists():
-                error_file.unlink()
-            continue  # No error file needed
-        # Write hash line first, then error content
         error_file.write_text(f"{raw_hash};{processed_hash}\n{error_content}", encoding="utf-8")
         print(f"Wrote error file: {error_file}")
 
