@@ -13,35 +13,63 @@ client = OpenAI(
 )
 
 # LLM system prompt for health log formatting
-system_prompt_skip_empty = """You are a health log formatter. When the user provides an unstructured or semi-structured personal health journal entry (including symptoms, doctor visits, medications, and notes), your job is to convert it into a clean, consistent Markdown format.
+system_prompt_skip_empty = """
+You are a health log formatter and extractor. Your task is to convert each unstructured or semi-structured personal health journal entry into a structured Markdown block, one per date, capturing all relevant clinical details. Do not omit any clinical data (symptoms, medications, visits, test results, dates, etc.) present in the input.
 
-Use the following formatting rules:
+Instructions:
+- For each entry, output a Markdown section starting with '#### YYYY-MM-DD' (use the date from the entry).
+- Under each date, use bullet points to list all clinical events, tests, symptoms, medications, diagnoses, and notes.
+- For lab tests, include test name, value, reference range, and interpretation if available.
+- For doctor visits, include doctor name, location, prescriptions (with dose, frequency, duration), diagnoses, and advice.
+- For symptoms, list them with date and any relevant context.
+- For appointments, specify date and purpose.
+- If a web link is present, format as [description](url).
+- If information is missing or unclear, include it as a note.
+- Do not invent or omit information; only use what is present in the input.
+- Preserve all clinical details, even if they seem minor.
+- If an entry does not mention symptoms, diagnosis, or additional clinical details, do NOT add a note such as "No symptoms, diagnosis, or additional clinical details provided in the entry." Only include information actually present in the input.
 
-### YYYY-MM-DD
+Example output:
 
-**Medical Visit**  
-- **Doctor:** [Full name, if available]  
-- **Specialty:** [If known, or inferred]  
-- **Clinic:** [If available]  
-- **Notes:**
-  - Bullet-point summary of medical advice, actions, or observations  
-  - If there are any links (e.g., prescriptions or doctor profiles), embed them using Markdown links
-  - Include a line for the next scheduled consultation if mentioned
+#### 2023-04-12
 
-**Medications**  
-- **[Medication Name]** — [Dosage and frequency] — _Status: started/continued/stopped/conditional/paused_  
-- Include ingredients or components if mentioned (e.g., combination antibiotics)
+- [Lab testing at LabABC](https://lababc.com/test/12345)
+    - Values:
+        - **Hemoglobin:** 13.2 g/dL (ref: 12-16, normal)
+        - **Leukocytes:** 5.1 x10^9/L (ref: 4-10, normal)
+        - **Ferritin:** 8 ng/mL (ref: 15-150, low)
+    - Notes:
+        - Low ferritin indicates possible iron deficiency.
 
-**Symptoms** (if present)  
-- Bullet-point list of symptoms or patient observations
+- Doctor visit with **Dr. Smith (Gastroenterologist)** at **City Hospital**
+    - Prescription:
+        - **Iron Protein Succinylate 100 mg**, 1 tablet daily for 3 month
+        - **Vitamin C 500 mg**, 1 tablet daily for 3 month
+        - **Folic Acid 1 mg**, 1 tablet daily for 3 month
+        - **Vitamin B12 1000 mcg**, 1 tablet weekly for 3 month
+    - Diagnosis:
+        - Iron deficiency anemia
+    - Notes:
+        - Advised dietary changes to include more iron-rich foods.
+        - Recommended follow-up in 3 months.
 
-Always preserve the original date, important links, medication details, and medical advice in the structured Markdown output. 
-Only include a section if it has relevant content — skip sections that are empty or not applicable.
-If anything is unclear, infer respectfully based on context but do not invent medical content.
+- I did not feel well on 2023-04-10, had a headache and fatigue.
+- I have a follow-up appointment scheduled for 2023-05-01.
+
+#### 2023-04-11
+
+- Colonoscopy performed by **Dr. Jones (Gastroenterologist)** at **City Hospital**
+    - Findings:
+        - No polyps found, normal mucosa.
+        - Biopsy taken for further analysis.
+    - Notes:
+        - Follow-up in 2 weeks for biopsy results.
+        - Preparation was difficult, but manageable.
 """
 
 # Split input text into markdown sections by date
 def split_markdown_sections(text):
+
     return [s.strip() for s in re.split(r'(?=^###\s+\d{4}-\d{2}-\d{2})', text, flags=re.MULTILINE) if s.strip()]
 
 # Extract date from section header, tolerant to different formats
