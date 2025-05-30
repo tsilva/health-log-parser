@@ -170,16 +170,21 @@ def extract_task(input_path, output_path, model_id, data_dir):
         processed_file = data_dir / f"{input_file_stem}_{date}.processed.md"
         error_file = data_dir / f"{input_file_stem}_{date}.errors.md"
         write_raw = not (raw_file.exists() and raw_file.read_text(encoding="utf-8") == section)
-        # Check if processed file exists and errors file exists with $OK$
+        # Only skip processing if processed exists AND errors exists AND errors has $OK$ as second line
         skip_processing = False
-        if processed_file.exists() and error_file.exists():
-            with error_file.open(encoding="utf-8") as ef:
-                lines = ef.readlines()
-                if len(lines) >= 2 and lines[1].strip() == "$OK$":
-                    processed_content = processed_file.read_text(encoding="utf-8").strip()
-                    if processed_content:
-                        processed_entries.append((date, processed_content))
-                        skip_processing = True
+        if processed_file.exists():
+            if error_file.exists():
+                with error_file.open(encoding="utf-8") as ef:
+                    lines = ef.readlines()
+                    if len(lines) >= 2 and lines[1].strip() == "$OK$":
+                        processed_content = processed_file.read_text(encoding="utf-8").strip()
+                        if processed_content:
+                            processed_entries.append((date, processed_content))
+                            skip_processing = True
+            else:
+                # processed exists, but no errors file: do not skip
+                pass
+        # If processed does not exist, or errors file exists but does not have $OK$, do not skip
         if skip_processing:
             continue
         if write_raw:
