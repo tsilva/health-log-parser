@@ -211,6 +211,15 @@ def validate_extraction_task(data_dir, model_id):
         # Compute hashes
         raw_hash = hashlib.sha256(input_text.encode("utf-8")).hexdigest()
         processed_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
+        error_file = data_dir / f"{raw_file.stem.replace('.raw', '')}.errors.md"
+        # Check if error file exists and hashes match
+        needs_validation = True
+        if error_file.exists():
+            first_line = error_file.open(encoding="utf-8").readline().strip()
+            if first_line == f"{raw_hash};{processed_hash}":
+                needs_validation = False
+        if not needs_validation:
+            continue
         system_prompt = (
             "You are a clinical data auditor. The user will provide two files: "
             "the first is the original health log (possibly unstructured), and the second is a curated/structured version. "
@@ -237,8 +246,10 @@ def validate_extraction_task(data_dir, model_id):
         )
         error_content = completion.choices[0].message.content.strip()
         if error_content.strip() == "No missing clinical data found.":
+            # Remove stale error file if present
+            if error_file.exists():
+                error_file.unlink()
             continue  # No error file needed
-        error_file = data_dir / f"{raw_file.stem.replace('.raw', '')}.errors.md"
         # Write hash line first, then error content
         error_file.write_text(f"{raw_hash};{processed_hash}\n{error_content}", encoding="utf-8")
         print(f"Wrote error file: {error_file}")
