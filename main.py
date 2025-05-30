@@ -118,39 +118,6 @@ def process_section_with_io(section, model_id, input_file_stem, data_dir):
         return (date, formatted)
     return None
 
-# Compare input and output files, generate a missing clinical data report using LLM
-def compare_input_output_and_report(input_path, output_path, report_path, model_id):
-    with open(input_path, "r", encoding="utf-8") as f: input_text = f.read()
-    with open(output_path, "r", encoding="utf-8") as f: output_text = f.read()
-    system_prompt = (
-        "You are a clinical data auditor. The user will provide two files: "
-        "the first is the original health log (possibly unstructured), and the second is a curated/structured version. "
-        "Your job is to identify and list any clinical data (symptoms, medications, medical visits, test results, dates, etc.) "
-        "that is present in the original file but missing or omitted in the curated file. "
-        "Be specific: for each missing item, quote the relevant text from the original and explain what is missing in the curated version. "
-        "If nothing is missing, say 'No missing clinical data found.'"
-    )
-    user_prompt = (
-        "Original health log (input file):\n-----\n"
-        f"{input_text}\n-----\n"
-        "Curated health log (output file):\n-----\n"
-        f"{output_text}\n-----\n"
-        "Please list any clinical data present in the original but missing in the curated version."
-    )
-    completion = client.chat.completions.create(
-        model=model_id,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ],
-        max_tokens=2048,
-        temperature=0.0
-    )
-    report = completion.choices[0].message.content.strip()
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(report)
-    print(f"Clinical data comparison report written to {report_path}")
-
 def get_file_short_hash(filepath):
     with open(filepath, "rb") as f:
         file_hash = hashlib.sha256(f.read()).hexdigest()
@@ -227,17 +194,14 @@ def extract_task(input_path, output_path, model_id, data_dir):
         f.write(curated_log)
     print(f"Curated health log written to {output_path}")
 
-    # Generate clinical data comparison report
-    report_path = data_dir / "clinical_data_missing_report.md"
-    compare_input_output_and_report(input_path, output_path, report_path, model_id)
-
 def validate_extraction_task(data_dir, model_id):
     # For each .raw.md and .processed.md pair in data_dir, compare and write .errors.md if needed
     raw_files = list(data_dir.glob("*.raw.md"))
-    for raw_file in tqdm(raw_files, desc="Validating extraction"):
+
+    def validate_one(raw_file):
         processed_file = data_dir / f"{raw_file.stem.replace('.raw', '')}.processed.md"
         if not processed_file.exists():
-            continue
+            return None
         input_text = raw_file.read_text(encoding="utf-8")
         output_text = processed_file.read_text(encoding="utf-8")
         # Compute hashes
@@ -251,7 +215,7 @@ def validate_extraction_task(data_dir, model_id):
             if first_line == f"{raw_hash};{processed_hash}":
                 needs_validation = False
         if not needs_validation:
-            continue
+            return None
         system_prompt = (
             "You are a clinical data auditor. The user will provide two files: "
             "the first is the original health log (possibly unstructured), and the second is a curated/structured version. "
@@ -278,7 +242,15 @@ def validate_extraction_task(data_dir, model_id):
         )
         error_content = completion.choices[0].message.content.strip()
         error_file.write_text(f"{raw_hash};{processed_hash}\n{error_content}", encoding="utf-8")
-        print(f"Wrote error file: {error_file}")
+        return error_file
+
+    max_workers = int(os.getenv("MAX_WORKERS", "4"))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = [executor.submit(validate_one, raw_file) for raw_file in raw_files]
+        for f in tqdm(as_completed(futures), total=len(futures), desc="Validating extraction"):
+            error_file = f.result()
+            if error_file:
+                print(f"Wrote error file: {error_file}")
 
 def main():
     parser = argparse.ArgumentParser(description="Health log parser and validator")
@@ -291,8 +263,7 @@ def main():
     # Validate extraction subcommand
     validate_parser = subparsers.add_parser("validate_extraction", help="Validate extraction by comparing input and output files")
     validate_parser.add_argument("input_file", help="Original input file")
-    #validate_parser.add_argument("output_file", help="Curated output file")
-
+    
     args = parser.parse_args()
     model_id = os.getenv("MODEL_ID")
 
