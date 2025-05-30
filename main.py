@@ -8,14 +8,19 @@ from dateutil.parser import parse as date_parse
 import argparse
 import hashlib
 
-# Load prompts from external files
-PROMPTS_DIR = Path(__file__).parent / "prompts"
-with open(PROMPTS_DIR / "process.system_prompt.md", "r", encoding="utf-8") as f:
-    process_system_prompt = f.read()
-with open(PROMPTS_DIR / "validate.system_prompt.md", "r", encoding="utf-8") as f:
-    validate_system_prompt = f.read()
-with open(PROMPTS_DIR / "validate.user_prompt.md", "r", encoding="utf-8") as f:
-    validate_user_prompt = f.read()
+def load_prompt(prompt_name):
+    """Load a prompt from the prompts directory."""
+    prompts_dir = Path(__file__).parent / "prompts"
+    prompt_path = prompts_dir / f"{prompt_name}.md"
+    if not prompt_path.exists():
+        raise FileNotFoundError(f"Prompt file {prompt_path} does not exist.")
+    with open(prompt_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+PROCESS_SYSTEM_PROMPT = load_prompt("process.system_prompt")
+VALIDATE_SYSTEM_PROMPT = load_prompt("validate.system_prompt")
+VALIDATE_USER_PROMPT = load_prompt("validate.user_prompt")
+SUMMARY_SYSTEM_PROMPT = load_prompt("summary.system_prompt")
 
 # Initialize OpenAI client
 client = OpenAI(
@@ -34,17 +39,12 @@ def extract_date_from_section(section):
 def get_short_hash(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
 
-def get_file_short_hash(filepath):
-    with open(filepath, "r", encoding="utf-8") as f: return get_short_hash(f.read())
-
 def process(input_path):
     model_id = os.getenv("MODEL_ID")
 
     # Create output path
-    short_hash = get_file_short_hash(input_path)
-    data_dir = Path("output") / short_hash
+    data_dir = Path("output") / input_path.stem
     data_dir.mkdir(parents=True, exist_ok=True)
-    output_path = data_dir / "output.md"
 
     # Run LLM to process a section, return formatted markdown
     def _process(raw_section):
@@ -59,8 +59,14 @@ def process(input_path):
             completion = client.chat.completions.create(
                 model=model_id,
                 messages=[
-                    {"role": "system", "content": process_system_prompt},
-                    {"role": "user", "content": raw_section}
+                    {
+                        "role": "system",
+                        "content": PROCESS_SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user", 
+                        "content": raw_section
+                    }
                 ],
                 max_tokens=2048,
                 temperature=0.0
@@ -68,16 +74,20 @@ def process(input_path):
             processed_section = completion.choices[0].message.content.strip()
 
             # Run LLM to validate the processed section
-            system_prompt = validate_system_prompt
-            user_prompt = validate_user_prompt.format(
-                raw_section=raw_section,
-                processed_section=processed_section
-            )
             completion = client.chat.completions.create(
                 model=model_id,
                 messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
+                    {
+                        "role": "system", 
+                        "content": VALIDATE_SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user", 
+                        "content": VALIDATE_USER_PROMPT.format(
+                            raw_section=raw_section,
+                            processed_section=processed_section
+                        )
+                    }
                 ],
                 max_tokens=2048,
                 temperature=0.0
@@ -106,11 +116,12 @@ def process(input_path):
     # Assert that each section contains exactly one '###'
     for section in sections:
         count = section.count('###')
-        assert count == 1, f"Section does not contain exactly one ###:\n{section}"
+        if count != 1:
+            print(f"Section does not contain exactly one '###':\n{section}")
+            sys.exit(1)
 
     # Assert no duplicate dates in sections
     dates = [extract_date_from_section(section) for section in sections]
-    # Print duplicate dates if any
     if len(dates) != len(set(dates)):
         duplicates = {date for date in dates if dates.count(date) > 1}
         print(f"Duplicate dates found: {duplicates}")
@@ -140,8 +151,28 @@ def process(input_path):
     processed_files = sorted(processed_files, key=lambda f: f.stem, reverse=True)
     processed_entries = ["\n".join(f.read_text(encoding="utf-8").splitlines()[1:]) for f in processed_files]
     processed_text = "\n\n".join(processed_entries)
-    with open(output_path, "w", encoding="utf-8") as f: f.write(processed_text)
-    print(f"Curated health log written to {output_path}")
+    with open(data_dir / "output.md", "w", encoding="utf-8") as f: f.write(processed_text)
+    print(f"Saved processed health log to {data_dir / 'output.md'}")
+
+    # Write the summary using the LLM
+    completion = client.chat.completions.create(
+        model=model_id,
+        messages=[
+            {
+                "role": "system", 
+                "content": SUMMARY_SYSTEM_PROMPT
+            },
+            {
+                "role": "user", 
+                "content": processed_text
+            }
+        ],
+        max_tokens=2048,
+        temperature=0.0
+    )
+    summary = completion.choices[0].message.content.strip()
+    with open(data_dir / "summary.md", "w", encoding="utf-8") as f: f.write(summary)
+    print(f"Saved processed health summary to {data_dir / 'summary.md'}")
 
 def main():
     parser = argparse.ArgumentParser(description="Health log parser and validator")

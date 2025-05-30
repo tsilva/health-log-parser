@@ -1,0 +1,1 @@
+- ensure that user knows if all files were processed successfully
