@@ -125,63 +125,57 @@ def get_file_short_hash(filepath):
 
 def extract_task(input_path, output_path, model_id, data_dir):
     # Read and split input file into sections
-    with open(input_path, "r", encoding="utf-8") as f: text = f.read()
+    with open(input_path, "r", encoding="utf-8") as f:
+        text = f.read()
     sections = split_markdown_sections(text)
     input_file_stem = Path(input_path).stem
 
-    # Check which sections need processing, collect already processed
     processed_entries, to_process = [], []
     for section in sections:
         date = extract_date_from_section(section)
         raw_file = data_dir / f"{input_file_stem}_{date}.raw.md"
         processed_file = data_dir / f"{input_file_stem}_{date}.processed.md"
         error_file = data_dir / f"{input_file_stem}_{date}.errors.md"
-        write_raw = not (raw_file.exists() and raw_file.read_text(encoding="utf-8") == section)
-        skip_processing = False
+        raw_file.write_text(section, encoding="utf-8")
+        raw_digest = hashlib.sha256(section.encode("utf-8")).hexdigest()
+        # Check if processed file exists and its first line matches raw digest
+        needs_processing = True
         if processed_file.exists():
-            if error_file.exists():
-                with error_file.open(encoding="utf-8") as ef:
-                    lines = ef.readlines()
-                    if len(lines) >= 2 and lines[1].strip() == "$OK$":
-                        processed_content = processed_file.read_text(encoding="utf-8").strip()
-                        if processed_content:
-                            processed_entries.append((date, processed_content))
-                            skip_processing = True
-            else:
-                pass
-        if skip_processing:
-            continue
-        if write_raw:
-            raw_file.write_text(section, encoding="utf-8")
-        if not write_raw and processed_file.exists():
-            processed_content = processed_file.read_text(encoding="utf-8").strip()
-            if processed_content:
-                processed_entries.append((date, processed_content))
-                continue
-        to_process.append(section)
-
-    # Assess which sections actually need processing before running tqdm
-    sections_to_actually_process = []
-    for section in to_process:
-        date = extract_date_from_section(section)
-        input_file_stem = Path(input_path).stem
-        processed_file = data_dir / f"{input_file_stem}_{date}.processed.md"
-        error_file = data_dir / f"{input_file_stem}_{date}.errors.md"
-        # Only process if processed file does not exist, or errors file exists but does not have $OK$
-        process_this = True
-        if processed_file.exists():
-            if error_file.exists():
-                with error_file.open(encoding="utf-8") as ef:
-                    lines = ef.readlines()
-                    if len(lines) >= 2 and lines[1].strip() == "$OK$":
-                        process_this = False
-        if process_this:
-            sections_to_actually_process.append(section)
+            with processed_file.open(encoding="utf-8") as pf:
+                lines = pf.readlines()
+                if lines and lines[0].strip() == raw_digest:
+                    needs_processing = False
+        # If errors file exists and does not contain $OK$, force reprocessing
+        if error_file.exists():
+            with error_file.open(encoding="utf-8") as ef:
+                lines = ef.readlines()
+                if not any("$OK$" in line for line in lines):
+                    needs_processing = True
+        if needs_processing:
+            to_process.append((section, raw_digest, date, raw_file, processed_file, error_file))
+        else:
+            # Read processed content (skip digest line)
+            with processed_file.open(encoding="utf-8") as pf:
+                lines = pf.readlines()
+                processed_content = "".join(lines[1:]).strip()
+                if processed_content:
+                    processed_entries.append((date, processed_content))
 
     max_workers = int(os.getenv("MAX_WORKERS", "4"))
-    if sections_to_actually_process:
+    def process_and_write(section, raw_digest, date, raw_file, processed_file, error_file):
+        formatted = process_section(section, model_id)
+        if formatted:
+            # Write processed file with digest as first line
+            processed_file.write_text(f"{raw_digest}\n{formatted.strip()}\n", encoding="utf-8")
+            return (date, formatted.strip())
+        return None
+
+    if to_process:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(process_section_with_io, section, model_id, input_file_stem, data_dir) for section in sections_to_actually_process]
+            futures = [
+                executor.submit(process_and_write, section, raw_digest, date, raw_file, processed_file, error_file)
+                for (section, raw_digest, date, raw_file, processed_file, error_file) in to_process
+            ]
             for f in tqdm(as_completed(futures), total=len(futures), desc="Processing sections"):
                 result = f.result()
                 if result:
@@ -204,10 +198,12 @@ def validate_extraction_task(data_dir, model_id):
             return None
         input_text = raw_file.read_text(encoding="utf-8")
         output_text = processed_file.read_text(encoding="utf-8")
+        
         # Compute hashes
         raw_hash = hashlib.sha256(input_text.encode("utf-8")).hexdigest()
         processed_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
         error_file = data_dir / f"{raw_file.stem.replace('.raw', '')}.errors.md"
+        
         # Check if error file exists and hashes match
         needs_validation = True
         if error_file.exists():
