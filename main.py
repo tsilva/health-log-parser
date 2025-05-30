@@ -203,12 +203,14 @@ def validate_extraction_task(data_dir, model_id):
     # For each .raw.md and .processed.md pair in data_dir, compare and write .errors.md if needed
     raw_files = list(data_dir.glob("*.raw.md"))
     for raw_file in tqdm(raw_files, desc="Validating extraction"):
-        date_part = raw_file.stem.split("_")[-1]
         processed_file = data_dir / f"{raw_file.stem.replace('.raw', '')}.processed.md"
         if not processed_file.exists():
             continue
         input_text = raw_file.read_text(encoding="utf-8")
         output_text = processed_file.read_text(encoding="utf-8")
+        # Compute hashes
+        raw_hash = hashlib.sha256(input_text.encode("utf-8")).hexdigest()
+        processed_hash = hashlib.sha256(output_text.encode("utf-8")).hexdigest()
         system_prompt = (
             "You are a clinical data auditor. The user will provide two files: "
             "the first is the original health log (possibly unstructured), and the second is a curated/structured version. "
@@ -237,7 +239,8 @@ def validate_extraction_task(data_dir, model_id):
         if error_content.strip() == "No missing clinical data found.":
             continue  # No error file needed
         error_file = data_dir / f"{raw_file.stem.replace('.raw', '')}.errors.md"
-        error_file.write_text(error_content, encoding="utf-8")
+        # Write hash line first, then error content
+        error_file.write_text(f"{raw_hash};{processed_hash}\n{error_content}", encoding="utf-8")
         print(f"Wrote error file: {error_file}")
 
 def main():
