@@ -1,1 +1,3 @@
 - ensure that user knows if all files were processed successfully
+- add support for running directly from target directory
+- point out lab dates that are not in health log

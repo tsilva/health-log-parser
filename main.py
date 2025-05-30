@@ -7,6 +7,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dateutil.parser import parse as date_parse
 import argparse
 import hashlib
+import io
+import pandas as pd
 
 def load_prompt(prompt_name):
     """Load a prompt from the prompts directory."""
@@ -126,7 +128,30 @@ def process(input_path):
         duplicates = {date for date in dates if dates.count(date) > 1}
         print(f"Duplicate dates found: {duplicates}")
         sys.exit(1)
-    
+
+    # If labs.csv exists, read it and append lab results to sections
+    labs_csv = Path(input_path).parent / "labs.csv"
+    if labs_csv.exists():
+        labs_df = pd.read_csv(labs_csv)
+        labs_df = labs_df[["date","lab_type","lab_name_enum","lab_value_final","lab_unit_final","lab_range_min_final","lab_range_max_final"]]
+
+        _sections = []
+        for section in sections:
+            date = extract_date_from_section(section)
+            lab_results = labs_df[labs_df['date'] == date]
+            if lab_results.empty: continue
+
+            buffer = io.StringIO()
+            try:
+                lab_results.to_csv(buffer, index=False)
+                csv_string = buffer.getvalue()
+            finally:
+                buffer.close()
+
+            _section = section + f"\n\nLab Results CSV:\n{csv_string}"
+            _sections.append(_section)
+        sections = _sections
+
     # Precompute which sections need processing
     to_process = []
     for section in sections:
@@ -138,7 +163,7 @@ def process(input_path):
             _raw_hash = processed_text.splitlines()[0].strip()
             if _raw_hash == raw_hash: continue 
         to_process.append(section)
-
+    
     # Process sections in parallel (only those that need processing)
     max_workers = int(os.getenv("MAX_WORKERS", "4"))
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
