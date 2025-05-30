@@ -43,7 +43,7 @@ def process(input_path):
     model_id = os.getenv("MODEL_ID")
 
     # Create output path
-    data_dir = Path("output") / input_path.stem
+    data_dir = Path("output") / Path(input_path).stem
     data_dir.mkdir(parents=True, exist_ok=True)
 
     # Run LLM to process a section, return formatted markdown
