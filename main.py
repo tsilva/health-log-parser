@@ -23,6 +23,7 @@ PROCESS_SYSTEM_PROMPT = load_prompt("process.system_prompt")
 VALIDATE_SYSTEM_PROMPT = load_prompt("validate.system_prompt")
 VALIDATE_USER_PROMPT = load_prompt("validate.user_prompt")
 SUMMARY_SYSTEM_PROMPT = load_prompt("summary.system_prompt")
+NEXT_STEPS_SYSTEM_PROMPT = load_prompt("next_steps.system_prompt")
 
 # Initialize OpenAI client
 client = OpenAI(
@@ -198,6 +199,27 @@ def process(input_path):
     summary = completion.choices[0].message.content.strip()
     with open(data_dir / "summary.md", "w", encoding="utf-8") as f: f.write(summary)
     print(f"Saved processed health summary to {data_dir / 'summary.md'}")
+
+    # Write next steps using the LLM
+    completion = client.chat.completions.create(
+        model=model_id,
+        messages=[
+            {
+                "role": "system", 
+                "content": NEXT_STEPS_SYSTEM_PROMPT
+            },
+            {
+                "role": "user", 
+                "content": processed_text
+            }
+        ],
+        max_tokens=100000,
+        temperature=0.0
+    )
+    next_steps = completion.choices[0].message.content.strip()
+    with open(data_dir / "next_steps.md", "w", encoding="utf-8") as f: f.write(next_steps)
+    print(f"Saved processed health summary to {data_dir / 'next_steps.md'}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Health log parser and validator")
