@@ -168,7 +168,20 @@ def extract_task(input_path, output_path, model_id, data_dir):
         date = extract_date_from_section(section)
         raw_file = data_dir / f"{input_file_stem}_{date}.raw.md"
         processed_file = data_dir / f"{input_file_stem}_{date}.processed.md"
+        error_file = data_dir / f"{input_file_stem}_{date}.errors.md"
         write_raw = not (raw_file.exists() and raw_file.read_text(encoding="utf-8") == section)
+        # Check if processed file exists and errors file exists with $OK$
+        skip_processing = False
+        if processed_file.exists() and error_file.exists():
+            with error_file.open(encoding="utf-8") as ef:
+                lines = ef.readlines()
+                if len(lines) >= 2 and lines[1].strip() == "$OK$":
+                    processed_content = processed_file.read_text(encoding="utf-8").strip()
+                    if processed_content:
+                        processed_entries.append((date, processed_content))
+                        skip_processing = True
+        if skip_processing:
+            continue
         if write_raw:
             raw_file.write_text(section, encoding="utf-8")
         if not write_raw and processed_file.exists():
