@@ -170,7 +170,6 @@ def extract_task(input_path, output_path, model_id, data_dir):
         processed_file = data_dir / f"{input_file_stem}_{date}.processed.md"
         error_file = data_dir / f"{input_file_stem}_{date}.errors.md"
         write_raw = not (raw_file.exists() and raw_file.read_text(encoding="utf-8") == section)
-        # Only skip processing if processed exists AND errors exists AND errors has $OK$ as second line
         skip_processing = False
         if processed_file.exists():
             if error_file.exists():
@@ -182,9 +181,7 @@ def extract_task(input_path, output_path, model_id, data_dir):
                             processed_entries.append((date, processed_content))
                             skip_processing = True
             else:
-                # processed exists, but no errors file: do not skip
                 pass
-        # If processed does not exist, or errors file exists but does not have $OK$, do not skip
         if skip_processing:
             continue
         if write_raw:
@@ -196,11 +193,28 @@ def extract_task(input_path, output_path, model_id, data_dir):
                 continue
         to_process.append(section)
 
-    # Process sections in parallel if needed
+    # Assess which sections actually need processing before running tqdm
+    sections_to_actually_process = []
+    for section in to_process:
+        date = extract_date_from_section(section)
+        input_file_stem = Path(input_path).stem
+        processed_file = data_dir / f"{input_file_stem}_{date}.processed.md"
+        error_file = data_dir / f"{input_file_stem}_{date}.errors.md"
+        # Only process if processed file does not exist, or errors file exists but does not have $OK$
+        process_this = True
+        if processed_file.exists():
+            if error_file.exists():
+                with error_file.open(encoding="utf-8") as ef:
+                    lines = ef.readlines()
+                    if len(lines) >= 2 and lines[1].strip() == "$OK$":
+                        process_this = False
+        if process_this:
+            sections_to_actually_process.append(section)
+
     max_workers = int(os.getenv("MAX_WORKERS", "4"))
-    if to_process:
+    if sections_to_actually_process:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(process_section_with_io, section, model_id, input_file_stem, data_dir) for section in to_process]
+            futures = [executor.submit(process_section_with_io, section, model_id, input_file_stem, data_dir) for section in sections_to_actually_process]
             for f in tqdm(as_completed(futures), total=len(futures), desc="Processing sections"):
                 result = f.result()
                 if result:
