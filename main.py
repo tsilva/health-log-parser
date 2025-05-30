@@ -199,55 +199,43 @@ def extract_task(input_path, output_path, model_id, data_dir):
     report_path = data_dir / "clinical_data_missing_report.md"
     compare_input_output_and_report(input_path, output_path, report_path, model_id)
 
-def validate_extraction_task(input_path, output_path, model_id):
-    # For each pair of input and output section, generate an errors file if there are missing data
-    input_text = Path(input_path).read_text(encoding="utf-8")
-    output_text = Path(output_path).read_text(encoding="utf-8")
-    input_sections = split_markdown_sections(input_text)
-    output_sections = split_markdown_sections(output_text)
-
-    # Map by date for matching
-    input_map = {extract_date_from_section(s): s for s in input_sections}
-    output_map = {extract_date_from_section(s): s for s in output_sections}
-
-    for date, input_section in input_map.items():
-        output_section = output_map.get(date)
-        if not output_section:
-            # No output for this date, treat as missing everything
-            error_content = f"All clinical data for {date} is missing in the curated output."
-        else:
-            # Compare input and output for this date
-            system_prompt = (
-                "You are a clinical data auditor. The user will provide two files: "
-                "the first is the original health log (possibly unstructured), and the second is a curated/structured version. "
-                "Your job is to identify and list any clinical data (symptoms, medications, medical visits, test results, dates, etc.) "
-                "that is present in the original file but missing or omitted in the curated file. "
-                "Be specific: for each missing item, quote the relevant text from the original and explain what is missing in the curated version. "
-                "If nothing is missing, say 'No missing clinical data found.'"
-            )
-            user_prompt = (
-                "Original health log (input section):\n-----\n"
-                f"{input_section}\n-----\n"
-                "Curated health log (output section):\n-----\n"
-                f"{output_section}\n-----\n"
-                "Please list any clinical data present in the original but missing in the curated version."
-            )
-            completion = client.chat.completions.create(
-                model=model_id,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=2048,
-                temperature=0.0
-            )
-            error_content = completion.choices[0].message.content.strip()
-            if error_content.strip() == "No missing clinical data found.":
-                continue  # No error file needed
-
-        # Write error file next to output file, named as <output_file>.<date>.errors.md
-        out_path = Path(output_path)
-        error_file = out_path.with_name(f"{out_path.stem}.{date}.errors.md")
+def validate_extraction_task(data_dir, model_id):
+    # For each .raw.md and .processed.md pair in data_dir, compare and write .errors.md if needed
+    for raw_file in data_dir.glob("*.raw.md"):
+        date_part = raw_file.stem.split("_")[-1]
+        processed_file = data_dir / f"{raw_file.stem.replace('.raw', '')}.processed.md"
+        if not processed_file.exists():
+            continue
+        input_text = raw_file.read_text(encoding="utf-8")
+        output_text = processed_file.read_text(encoding="utf-8")
+        system_prompt = (
+            "You are a clinical data auditor. The user will provide two files: "
+            "the first is the original health log (possibly unstructured), and the second is a curated/structured version. "
+            "Your job is to identify and list any clinical data (symptoms, medications, medical visits, test results, dates, etc.) "
+            "that is present in the original file but missing or omitted in the curated file. "
+            "Be specific: for each missing item, quote the relevant text from the original and explain what is missing in the curated version. "
+            "If nothing is missing, say 'No missing clinical data found.'"
+        )
+        user_prompt = (
+            "Original health log (input section):\n-----\n"
+            f"{input_text}\n-----\n"
+            "Curated health log (output section):\n-----\n"
+            f"{output_text}\n-----\n"
+            "Please list any clinical data present in the original but missing in the curated version."
+        )
+        completion = client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=2048,
+            temperature=0.0
+        )
+        error_content = completion.choices[0].message.content.strip()
+        if error_content.strip() == "No missing clinical data found.":
+            continue  # No error file needed
+        error_file = data_dir / f"{raw_file.stem.replace('.raw', '')}.errors.md"
         error_file.write_text(error_content, encoding="utf-8")
         print(f"Wrote error file: {error_file}")
 
@@ -262,7 +250,7 @@ def main():
     # Validate extraction subcommand
     validate_parser = subparsers.add_parser("validate_extraction", help="Validate extraction by comparing input and output files")
     validate_parser.add_argument("input_file", help="Original input file")
-    validate_parser.add_argument("output_file", help="Curated output file")
+    #validate_parser.add_argument("output_file", help="Curated output file")
 
     args = parser.parse_args()
     model_id = os.getenv("MODEL_ID")
@@ -276,10 +264,10 @@ def main():
         extract_task(input_path, output_path, model_id, data_dir)
     elif args.task == "validate_extraction":
         input_path = args.input_file
-        output_path = args.output_file
-        data_dir = Path("output")
-        data_dir.mkdir(exist_ok=True)
-        validate_extraction_task(input_path, output_path, model_id)
+        short_hash = get_file_short_hash(input_path)
+        data_dir = Path("output") / short_hash
+        assert data_dir.exists(), f"Data directory {data_dir} does not exist. Please run extraction first."
+        validate_extraction_task(data_dir, model_id)
     else:
         parser.print_help()
         sys.exit(1)
